@@ -4,7 +4,7 @@ mixin SpotubeAudioPlayersStreams on AudioPlayerInterface {
   // stream getters
   Stream<Duration> get durationStream {
     // if (mkSupportedPlatform) {
-    return _mkPlayer.streams.duration;
+    return _mkPlayer.stream.duration;
     // } else {
     //   return _justAudio!.durationStream
     //       .where((event) => event != null)
@@ -15,7 +15,7 @@ mixin SpotubeAudioPlayersStreams on AudioPlayerInterface {
 
   Stream<Duration> get positionStream {
     // if (mkSupportedPlatform) {
-    return _mkPlayer.streams.position;
+    return _mkPlayer.stream.position;
     // } else {
     //   return _justAudio!.positionStream;
     // }
@@ -24,7 +24,7 @@ mixin SpotubeAudioPlayersStreams on AudioPlayerInterface {
   Stream<Duration> get bufferedPositionStream {
     // if (mkSupportedPlatform) {
     // audioplayers doesn't have the capability to get buffered position
-    return _mkPlayer.streams.buffer;
+    return _mkPlayer.stream.buffer;
     // } else {
     //   return _justAudio!.bufferedPositionStream;
     // }
@@ -32,7 +32,7 @@ mixin SpotubeAudioPlayersStreams on AudioPlayerInterface {
 
   Stream<void> get completedStream {
     // if (mkSupportedPlatform) {
-    return _mkPlayer.streams.completed;
+    return _mkPlayer.stream.completed;
     // } else {
     //   return _justAudio!.playerStateStream
     //       .where(
@@ -45,19 +45,16 @@ mixin SpotubeAudioPlayersStreams on AudioPlayerInterface {
   Stream<int> percentCompletedStream(double percent) {
     return positionStream
         .asyncMap(
-          (position) async => (await duration)?.inSeconds == 0
+          (position) async => duration == Duration.zero
               ? 0
-              : (position.inSeconds /
-                      ((await duration)?.inSeconds ?? 100) *
-                      100)
-                  .toInt(),
+              : (position.inSeconds / duration.inSeconds * 100).toInt(),
         )
         .where((event) => event >= percent);
   }
 
   Stream<bool> get playingStream {
     // if (mkSupportedPlatform) {
-    return _mkPlayer.streams.playing;
+    return _mkPlayer.stream.playing;
     // } else {
     //   return _justAudio!.playingStream;
     // }
@@ -71,19 +68,19 @@ mixin SpotubeAudioPlayersStreams on AudioPlayerInterface {
     // }
   }
 
-  Stream<PlaybackLoopMode> get loopModeStream {
+  Stream<PlaylistMode> get loopModeStream {
     // if (mkSupportedPlatform) {
-    return _mkPlayer.loopModeStream.map(PlaybackLoopMode.fromPlaylistMode);
+    return _mkPlayer.stream.playlistMode;
     // } else {
     //   return _justAudio!.loopModeStream
-    //       .map(PlaybackLoopMode.fromLoopMode)
+    //       .map(PlaylistMode.fromLoopMode)
     //       ;
     // }
   }
 
   Stream<double> get volumeStream {
     // if (mkSupportedPlatform) {
-    return _mkPlayer.streams.volume.map((event) => event / 100);
+    return _mkPlayer.stream.volume.map((event) => event / 100);
     // } else {
     //   return _justAudio!.volumeStream;
     // }
@@ -127,7 +124,7 @@ mixin SpotubeAudioPlayersStreams on AudioPlayerInterface {
     // if (mkSupportedPlatform) {
     return _mkPlayer.indexChangeStream
         .map((event) {
-          return _mkPlayer.playlist.medias.elementAtOrNull(event)?.uri;
+          return _mkPlayer.state.playlist.medias.elementAtOrNull(event)?.uri;
         })
         .where((event) => event != null)
         .cast<String>();
@@ -140,4 +137,16 @@ mixin SpotubeAudioPlayersStreams on AudioPlayerInterface {
     //       .cast<String>();
     // }
   }
+
+  Stream<List<mk.AudioDevice>> get devicesStream =>
+      _mkPlayer.stream.audioDevices.asBroadcastStream();
+
+  Stream<mk.AudioDevice> get selectedDeviceStream =>
+      _mkPlayer.stream.audioDevice.asBroadcastStream();
+
+  Stream<String> get errorStream => _mkPlayer.stream.error;
+
+  Stream<mk.Playlist> get playlistStream => _mkPlayer.stream.playlist.map((s) {
+        return s;
+      });
 }

@@ -5,50 +5,120 @@ import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:go_router/go_router.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:spotube/components/shared/dialogs/replace_downloaded_dialog.dart';
-import 'package:spotube/components/root/bottom_player.dart';
-import 'package:spotube/components/root/sidebar.dart';
-import 'package:spotube/components/root/spotube_navigation_bar.dart';
-import 'package:spotube/hooks/use_update_checker.dart';
+import 'package:spotube/collections/side_bar_tiles.dart';
+import 'package:spotube/collections/spotube_icons.dart';
+import 'package:spotube/components/framework/app_pop_scope.dart';
+import 'package:spotube/modules/player/player_queue.dart';
+import 'package:spotube/components/dialogs/replace_downloaded_dialog.dart';
+import 'package:spotube/modules/root/bottom_player.dart';
+import 'package:spotube/modules/root/sidebar.dart';
+import 'package:spotube/modules/root/spotube_navigation_bar.dart';
+import 'package:spotube/extensions/context.dart';
+import 'package:spotube/hooks/configurators/use_endless_playback.dart';
+import 'package:spotube/pages/home/home.dart';
 import 'package:spotube/provider/download_manager_provider.dart';
-import 'package:spotube/utils/persisted_state_notifier.dart';
-
-const rootPaths = {
-  0: "/",
-  1: "/search",
-  2: "/library",
-  3: "/lyrics",
-};
+import 'package:spotube/provider/audio_player/audio_player.dart';
+import 'package:spotube/provider/server/routes/connect.dart';
+import 'package:spotube/services/connectivity_adapter.dart';
+import 'package:spotube/utils/platform.dart';
+import 'package:spotube/utils/service_utils.dart';
 
 class RootApp extends HookConsumerWidget {
   final Widget child;
   const RootApp({
     required this.child,
-    Key? key,
-  }) : super(key: key);
+    super.key,
+  });
 
   @override
   Widget build(BuildContext context, ref) {
-    final index = useState(0);
-    final isMounted = useIsMounted();
+    final theme = Theme.of(context);
+
     final showingDialogCompleter = useRef(Completer()..complete());
-    final downloader = ref.watch(downloadManagerProvider.notifier);
+    final downloader = ref.watch(downloadManagerProvider);
+    final scaffoldMessenger = ScaffoldMessenger.of(context);
+    final connectRoutes = ref.watch(serverConnectRoutesProvider);
 
     useEffect(() {
       WidgetsBinding.instance.addPostFrameCallback((_) async {
-        final sharedPreferences = await SharedPreferences.getInstance();
-
-        if (sharedPreferences.getBool(kIsUsingEncryption) == false &&
-            context.mounted) {
-          await PersistedStateNotifier.showNoEncryptionDialog(context);
-        }
+        ServiceUtils.checkForUpdates(context, ref);
       });
+
+      final subscriptions = [
+        ConnectionCheckerService.instance.onConnectivityChanged
+            .listen((status) {
+          if (status) {
+            scaffoldMessenger.showSnackBar(
+              SnackBar(
+                content: Row(
+                  children: [
+                    Icon(
+                      SpotubeIcons.wifi,
+                      color: theme.colorScheme.onPrimary,
+                    ),
+                    const SizedBox(width: 10),
+                    Text(context.l10n.connection_restored),
+                  ],
+                ),
+                backgroundColor: theme.colorScheme.primary,
+                showCloseIcon: true,
+                width: 350,
+              ),
+            );
+          } else {
+            scaffoldMessenger.showSnackBar(
+              SnackBar(
+                content: Row(
+                  children: [
+                    Icon(
+                      SpotubeIcons.noWifi,
+                      color: theme.colorScheme.onError,
+                    ),
+                    const SizedBox(width: 10),
+                    Text(context.l10n.you_are_offline),
+                  ],
+                ),
+                backgroundColor: theme.colorScheme.error,
+                showCloseIcon: true,
+                width: 300,
+              ),
+            );
+          }
+        }),
+        connectRoutes.connectClientStream.listen((clientOrigin) {
+          scaffoldMessenger.showSnackBar(
+            SnackBar(
+              backgroundColor: Colors.yellow[600],
+              behavior: SnackBarBehavior.floating,
+              content: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    SpotubeIcons.error,
+                    color: Colors.black,
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    context.l10n.connect_client_alert(clientOrigin),
+                    style: const TextStyle(color: Colors.black),
+                  ),
+                ],
+              ),
+            ),
+          );
+        })
+      ];
+
+      return () {
+        for (final subscription in subscriptions) {
+          subscription.cancel();
+        }
+      };
     }, []);
 
     useEffect(() {
       downloader.onFileExists = (track) async {
-        if (!isMounted()) return false;
+        if (!context.mounted) return false;
 
         if (!showingDialogCompleter.value.isCompleted) {
           await showingDialogCompleter.value.future;
@@ -80,7 +150,8 @@ class RootApp extends HookConsumerWidget {
     }, [downloader]);
 
     // checks for latest version of the application
-    useUpdateChecker(ref);
+
+    useEndlessPlayback(ref);
 
     final backgroundColor = Theme.of(context).scaffoldBackgroundColor;
 
@@ -96,29 +167,69 @@ class RootApp extends HookConsumerWidget {
       return null;
     }, [backgroundColor]);
 
-    return Scaffold(
-      body: Sidebar(
-        selectedIndex: index.value,
-        onSelectedIndexChanged: (i) {
-          index.value = i;
-          GoRouter.of(context).go(rootPaths[index.value]!);
-        },
-        child: child,
-      ),
+    final navTileNames = useMemoized(() {
+      return getSidebarTileList(context.l10n).map((s) => s.name).toList();
+    }, []);
+
+    final scaffold = Scaffold(
+      body: Sidebar(child: child),
       extendBody: true,
-      bottomNavigationBar: Column(
+      drawerScrimColor: Colors.transparent,
+      endDrawer: kIsDesktop
+          ? Container(
+              constraints: const BoxConstraints(maxWidth: 800),
+              decoration: BoxDecoration(
+                boxShadow: theme.brightness == Brightness.light
+                    ? null
+                    : kElevationToShadow[8],
+              ),
+              margin: const EdgeInsets.only(
+                top: 40,
+                bottom: 100,
+              ),
+              child: Consumer(
+                builder: (context, ref, _) {
+                  final playlist = ref.watch(audioPlayerProvider);
+                  final playlistNotifier =
+                      ref.read(audioPlayerProvider.notifier);
+
+                  return PlayerQueue.fromAudioPlayerNotifier(
+                    floating: true,
+                    playlist: playlist,
+                    notifier: playlistNotifier,
+                  );
+                },
+              ),
+            )
+          : null,
+      bottomNavigationBar: const Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           BottomPlayer(),
-          SpotubeNavigationBar(
-            selectedIndex: index.value,
-            onSelectedIndexChanged: (selectedIndex) {
-              index.value = selectedIndex;
-              GoRouter.of(context).go(rootPaths[selectedIndex]!);
-            },
-          ),
+          SpotubeNavigationBar(),
         ],
       ),
+    );
+
+    if (!kIsAndroid) {
+      return scaffold;
+    }
+
+    final topRoute = GoRouterState.of(context).topRoute;
+    final canPop = topRoute != null && !navTileNames.contains(topRoute.name);
+
+    return AppPopScope(
+      canPop: canPop,
+      onPopInvoked: (didPop) {
+        if (didPop) return;
+
+        if (topRoute?.name == HomePage.name) {
+          SystemNavigator.pop();
+        } else {
+          context.goNamed(HomePage.name);
+        }
+      },
+      child: scaffold,
     );
   }
 }

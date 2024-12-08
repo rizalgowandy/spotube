@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 
-ThemeData theme(Color seed, Brightness brightness) {
+ThemeData theme(Color seed, Brightness brightness, bool isAmoled) {
   final scheme = ColorScheme.fromSeed(
     seedColor: seed,
     shadow: Colors.black12,
+    surface: isAmoled ? Colors.black : null,
     brightness: brightness,
   );
   return ThemeData(
@@ -13,7 +14,12 @@ ThemeData theme(Color seed, Brightness brightness) {
       horizontalTitleGap: 5,
       iconColor: scheme.onSurface,
     ),
-    appBarTheme: const AppBarTheme(surfaceTintColor: Colors.transparent),
+    appBarTheme: const AppBarTheme(
+      surfaceTintColor: Colors.transparent,
+      scrolledUnderElevation: 0,
+      shadowColor: Colors.transparent,
+      elevation: 0,
+    ),
     inputDecorationTheme: InputDecorationTheme(
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(15),
@@ -23,7 +29,7 @@ ThemeData theme(Color seed, Brightness brightness) {
     navigationBarTheme: const NavigationBarThemeData(
       labelBehavior: NavigationDestinationLabelBehavior.alwaysHide,
       height: 50,
-      iconTheme: MaterialStatePropertyAll(
+      iconTheme: WidgetStatePropertyAll(
         IconThemeData(size: 18),
       ),
     ),
@@ -41,6 +47,9 @@ ThemeData theme(Color seed, Brightness brightness) {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
       color: scheme.surface,
       elevation: 4,
+      labelTextStyle: WidgetStatePropertyAll(
+        TextStyle(color: scheme.onSurface),
+      ),
     ),
     snackBarTheme: SnackBarThemeData(
       behavior: SnackBarBehavior.floating,
@@ -50,20 +59,28 @@ ThemeData theme(Color seed, Brightness brightness) {
     ),
     sliderTheme: SliderThemeData(overlayShape: SliderComponentShape.noOverlay),
     searchBarTheme: SearchBarThemeData(
+      textStyle: const WidgetStatePropertyAll(TextStyle(fontSize: 15)),
       constraints: const BoxConstraints(maxWidth: double.infinity),
-      backgroundColor: MaterialStatePropertyAll(
+      padding: const WidgetStatePropertyAll(EdgeInsets.all(8)),
+      backgroundColor: WidgetStatePropertyAll(
         Color.lerp(
-          scheme.surfaceVariant,
+          scheme.surfaceContainerHighest,
           scheme.surface,
           brightness == Brightness.light ? .9 : .7,
         ),
       ),
-      elevation: const MaterialStatePropertyAll(0),
-      shape: MaterialStatePropertyAll(
+      elevation: const WidgetStatePropertyAll(0),
+      shape: WidgetStatePropertyAll(
         RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(10),
         ),
       ),
+    ),
+    scrollbarTheme: const ScrollbarThemeData(
+      thickness: WidgetStatePropertyAll(14),
+    ),
+    checkboxTheme: CheckboxThemeData(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
     ),
   );
 }

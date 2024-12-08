@@ -1,193 +1,237 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:background_downloader/background_downloader.dart';
+import 'package:spotube/extensions/track.dart';
+import 'package:spotube/services/logger/logger.dart';
 import 'package:collection/collection.dart';
-import 'package:hooks_riverpod/hooks_riverpod.dart';
-import 'package:http/http.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:metadata_god/metadata_god.dart';
 import 'package:path/path.dart';
 import 'package:spotify/spotify.dart';
-import 'package:spotube/collections/routes.dart';
-import 'package:spotube/components/shared/dialogs/replace_downloaded_dialog.dart';
-import 'package:spotube/models/spotube_track.dart';
+import 'package:spotube/extensions/artist_simple.dart';
+import 'package:spotube/extensions/image.dart';
+import 'package:spotube/provider/user_preferences/user_preferences_provider.dart';
+import 'package:spotube/services/download_manager/download_manager.dart';
+import 'package:spotube/services/sourced_track/enums.dart';
+import 'package:spotube/services/sourced_track/sourced_track.dart';
+import 'package:spotube/utils/primitive_utils.dart';
+import 'package:spotube/utils/service_utils.dart';
 
-import 'package:spotube/provider/user_preferences_provider.dart';
-import 'package:spotube/provider/youtube_provider.dart';
-import 'package:spotube/services/youtube/youtube.dart';
-import 'package:spotube/utils/type_conversion_utils.dart';
+class DownloadManagerProvider extends ChangeNotifier {
+  DownloadManagerProvider({required this.ref})
+      : $history = <SourcedTrack>{},
+        $backHistory = <Track>{},
+        dl = DownloadManager() {
+    dl.statusStream.listen((event) async {
+      try {
+        final (:request, :status) = event;
 
-class DownloadManagerProvider extends StateNotifier<List<SpotubeTrack>> {
-  final Ref ref;
+        final track = $history.firstWhereOrNull(
+          (element) => element.getUrlOfCodec(downloadCodec) == request.url,
+        );
+        if (track == null) return;
 
-  final StreamController<TaskProgressUpdate> activeDownloadProgress;
-  final StreamController<Task> failedDownloads;
-  Track? _activeItem;
+        final savePath = getTrackFileUrl(track);
+        // related to onFileExists
+        final oldFile = File("$savePath.old");
 
-  FutureOr<bool> Function(Track)? onFileExists;
+        // if download failed and old file exists, rename it back
+        if ((status == DownloadStatus.failed ||
+                status == DownloadStatus.canceled) &&
+            await oldFile.exists()) {
+          await oldFile.rename(savePath);
+        }
+        if (status != DownloadStatus.completed ||
+            //? WebA audiotagging is not supported yet
+            //? Although in future by converting weba to opus & then tagging it
+            //? is possible using vorbis comments
+            downloadCodec == SourceCodecs.weba) return;
 
-  DownloadManagerProvider(this.ref)
-      : activeDownloadProgress = StreamController.broadcast(),
-        failedDownloads = StreamController.broadcast(),
-        super([]) {
-    FileDownloader().registerCallbacks(
-      group: FileDownloader.defaultGroup,
-      taskNotificationTapCallback: (task, notificationType) {
-        router.go("/library");
-      },
-      taskStatusCallback: (update) async {
-        if (update.status == TaskStatus.running) {
-          _activeItem =
-              state.firstWhereOrNull((track) => track.id == update.task.taskId);
-          state = state.toList();
+        final file = File(request.path);
+
+        if (await oldFile.exists()) {
+          await oldFile.delete();
         }
 
-        if (update.status == TaskStatus.failed ||
-            update.status == TaskStatus.notFound) {
-          failedDownloads.add(update.task);
-        }
+        final imageBytes = await ServiceUtils.downloadImage(
+          (track.album?.images).asUrlString(
+            placeholder: ImagePlaceholder.albumArt,
+            index: 1,
+          ),
+        );
 
-        if (update.status == TaskStatus.complete) {
-          final track =
-              state.firstWhere((element) => element.id == update.task.taskId);
+        final metadata = track.toMetadata(
+          fileLength: await file.length(),
+          imageBytes: imageBytes,
+        );
 
-          // resetting the replace downloaded file state on queue completion
-          if (state.last == track) {
-            ref.read(replaceDownloadedFileState.notifier).state = null;
-          }
-
-          state = state
-              .where((element) => element.id != update.task.taskId)
-              .toList();
-
-          final imageUri = TypeConversionUtils.image_X_UrlString(
-            track.album?.images ?? [],
-            placeholder: ImagePlaceholder.online,
-          );
-          final response = await get(Uri.parse(imageUri));
-
-          final tempFile = File(await update.task.filePath());
-
-          final file = tempFile.copySync(_getPathForTrack(track));
-
-          await tempFile.delete();
-
-          await MetadataGod.writeMetadata(
-            file: file.path,
-            metadata: Metadata(
-              title: track.name,
-              artist: track.artists?.map((a) => a.name).join(", "),
-              album: track.album?.name,
-              albumArtist: track.artists?.map((a) => a.name).join(", "),
-              year: track.album?.releaseDate != null
-                  ? int.tryParse(track.album!.releaseDate!)
-                  : null,
-              trackNumber: track.trackNumber,
-              discNumber: track.discNumber,
-              durationMs: track.durationMs?.toDouble(),
-              fileSize: file.lengthSync(),
-              trackTotal: track.album?.tracks?.length,
-              picture: response.headers['content-type'] != null
-                  ? Picture(
-                      data: response.bodyBytes,
-                      mimeType: response.headers['content-type']!,
-                    )
-                  : null,
-            ),
-          );
-        }
-      },
-      taskProgressCallback: (update) {
-        activeDownloadProgress.add(update);
-      },
-    );
-    FileDownloader().trackTasks(markDownloadedComplete: true);
+        await MetadataGod.writeMetadata(
+          file: file.path,
+          metadata: metadata,
+        );
+      } catch (e, stack) {
+        AppLogger.reportError(e, stack);
+      }
+    });
   }
 
-  UserPreferences get preferences => ref.read(userPreferencesProvider);
-  YoutubeEndpoints get youtube => ref.read(youtubeProvider);
+  Future<bool> Function(Track track) onFileExists = (Track track) async => true;
 
-  int get totalDownloads => state.length;
-  List<Track> get items => state;
-  Track? get activeItem => _activeItem;
+  final Ref<DownloadManagerProvider> ref;
 
-  String _getPathForTrack(Track track) => join(
-        preferences.downloadLocation,
-        "${track.name} - ${track.artists?.map((a) => a.name).join(", ")}.m4a",
+  String get downloadDirectory =>
+      ref.read(userPreferencesProvider.select((s) => s.downloadLocation));
+  SourceCodecs get downloadCodec =>
+      ref.read(userPreferencesProvider.select((s) => s.downloadMusicCodec));
+
+  int get $downloadCount => dl
+      .getAllDownloads()
+      .where(
+        (download) =>
+            download.status.value == DownloadStatus.downloading ||
+            download.status.value == DownloadStatus.paused ||
+            download.status.value == DownloadStatus.queued,
+      )
+      .length;
+
+  final Set<SourcedTrack> $history;
+  // these are the tracks which metadata hasn't been fetched yet
+  final Set<Track> $backHistory;
+  final DownloadManager dl;
+
+  String getTrackFileUrl(Track track) {
+    final name =
+        "${track.name} - ${track.artists?.asString() ?? ""}.${downloadCodec.name}";
+    return join(downloadDirectory, PrimitiveUtils.toSafeFileName(name));
+  }
+
+  bool isActive(Track track) {
+    if ($backHistory.contains(track)) return true;
+
+    final sourcedTrack = mapToSourcedTrack(track);
+
+    if (sourcedTrack == null) return false;
+
+    return dl
+        .getAllDownloads()
+        .where(
+          (download) =>
+              download.status.value == DownloadStatus.downloading ||
+              download.status.value == DownloadStatus.paused ||
+              download.status.value == DownloadStatus.queued,
+        )
+        .map((e) => e.request.url)
+        .contains(sourcedTrack.getUrlOfCodec(downloadCodec));
+  }
+
+  /// For singular downloads
+  Future<void> addToQueue(Track track) async {
+    final savePath = getTrackFileUrl(track);
+
+    final oldFile = File(savePath);
+    if (await oldFile.exists() && !await onFileExists(track)) {
+      return;
+    }
+
+    if (await oldFile.exists()) {
+      await oldFile.rename("$savePath.old");
+    }
+
+    if (track is SourcedTrack && track.codec == downloadCodec) {
+      final downloadTask =
+          await dl.addDownload(track.getUrlOfCodec(downloadCodec), savePath);
+      if (downloadTask != null) {
+        $history.add(track);
+      }
+    } else {
+      $backHistory.add(track);
+      final sourcedTrack = await SourcedTrack.fetchFromTrack(
+        ref: ref,
+        track: track,
+      ).then((d) {
+        $backHistory.remove(track);
+        return d;
+      });
+      final downloadTask = await dl.addDownload(
+        sourcedTrack.getUrlOfCodec(downloadCodec),
+        savePath,
       );
-
-  Future<Task> _ensureSpotubeTrack(Track track) async {
-    if (state.any((element) => element.id == track.id)) {
-      final task = await FileDownloader().taskForId(track.id!);
-      if (task != null) {
-        return task;
+      if (downloadTask != null) {
+        $history.add(sourcedTrack);
       }
-      // this makes sure we already have the fetched track
-      track = state.firstWhere((element) => element.id == track.id);
-      state.removeWhere((element) => element.id == track.id);
     }
-    final spotubeTrack = track is SpotubeTrack
-        ? track
-        : await SpotubeTrack.fetchFromTrack(
-            track,
-            youtube,
-          );
-    state = [...state, spotubeTrack];
-    final task = DownloadTask(
-      url: spotubeTrack.ytUri,
-      baseDirectory: BaseDirectory.applicationSupport,
-      taskId: spotubeTrack.id!,
-      updates: Updates.statusAndProgress,
+
+    notifyListeners();
+  }
+
+  Future<void> batchAddToQueue(List<Track> tracks) async {
+    $backHistory.addAll(
+      tracks.where((element) => element is! SourcedTrack),
     );
-    return task;
-  }
-
-  Future<Task?> enqueue(Track track) async {
-    final replaceFileGlobal = ref.read(replaceDownloadedFileState);
-    final file = File(_getPathForTrack(track));
-    if (file.existsSync() &&
-        (replaceFileGlobal ?? await onFileExists?.call(track)) != true) {
-      if (state.isEmpty) {
-        ref.read(replaceDownloadedFileState.notifier).state = null;
+    notifyListeners();
+    for (final track in tracks) {
+      try {
+        if (track == tracks.first) {
+          await addToQueue(track);
+        } else {
+          await Future.delayed(
+            const Duration(seconds: 1),
+            () => addToQueue(track),
+          );
+        }
+      } catch (e) {
+        AppLogger.reportError(e, StackTrace.current);
+        continue;
       }
-      return null;
     }
-
-    final task = await _ensureSpotubeTrack(track);
-
-    await FileDownloader().enqueue(task);
-    return task;
   }
 
-  Future<List<Task>> enqueueAll(List<Track> tracks) async {
-    final tasks = await Future.wait(tracks.mapIndexed((i, e) {
-      if (i != 0) {
-        /// One second delay between each download to avoid
-        /// clogging the Piped server with too many requests
-        return Future.delayed(const Duration(seconds: 1), () => enqueue(e));
-      }
-      return enqueue(e);
-    }));
+  Future<void> removeFromQueue(SourcedTrack track) async {
+    await dl.removeDownload(track.getUrlOfCodec(downloadCodec));
+    $history.remove(track);
+  }
 
-    if (tasks.isEmpty) {
-      ref.read(replaceDownloadedFileState.notifier).state = null;
+  Future<void> pause(SourcedTrack track) {
+    return dl.pauseDownload(track.getUrlOfCodec(downloadCodec));
+  }
+
+  Future<void> resume(SourcedTrack track) {
+    return dl.resumeDownload(track.getUrlOfCodec(downloadCodec));
+  }
+
+  Future<void> retry(SourcedTrack track) {
+    return addToQueue(track);
+  }
+
+  void cancel(SourcedTrack track) {
+    dl.cancelDownload(track.getUrlOfCodec(downloadCodec));
+  }
+
+  void cancelAll() {
+    for (final download in dl.getAllDownloads()) {
+      if (download.status.value == DownloadStatus.completed) continue;
+      dl.cancelDownload(download.request.url);
     }
-
-    return tasks.whereType<Task>().toList();
   }
 
-  Future<void> cancel(Track track) async {
-    await FileDownloader().cancelTaskWithId(track.id!);
-    state = state.where((element) => element.id != track.id).toList();
+  SourcedTrack? mapToSourcedTrack(Track track) {
+    if (track is SourcedTrack) {
+      return track;
+    } else {
+      return $history.firstWhereOrNull((element) => element.id == track.id);
+    }
   }
 
-  Future<void> cancelAll() async {
-    (await FileDownloader().reset());
-    state = [];
+  ValueNotifier<DownloadStatus>? getStatusNotifier(SourcedTrack track) {
+    return dl.getDownload(track.getUrlOfCodec(downloadCodec))?.status;
+  }
+
+  ValueNotifier<double>? getProgressNotifier(SourcedTrack track) {
+    return dl.getDownload(track.getUrlOfCodec(downloadCodec))?.progress;
   }
 }
 
-final downloadManagerProvider =
-    StateNotifierProvider<DownloadManagerProvider, List<Track>>(
-  DownloadManagerProvider.new,
+final downloadManagerProvider = ChangeNotifierProvider<DownloadManagerProvider>(
+  (ref) => DownloadManagerProvider(ref: ref),
 );

@@ -1,54 +1,49 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_desktop_tools/flutter_desktop_tools.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
+import 'package:gap/gap.dart';
 import 'package:go_router/go_router.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:palette_generator/palette_generator.dart';
 import 'package:spotube/collections/spotube_icons.dart';
-import 'package:spotube/components/player/player_controls.dart';
-import 'package:spotube/components/player/player_queue.dart';
-import 'package:spotube/components/root/sidebar.dart';
-import 'package:spotube/components/shared/fallbacks/anonymous_fallback.dart';
-import 'package:spotube/components/shared/page_window_title_bar.dart';
+import 'package:spotube/modules/player/player_controls.dart';
+import 'package:spotube/modules/player/player_queue.dart';
+import 'package:spotube/modules/root/sidebar.dart';
 import 'package:spotube/extensions/context.dart';
-import 'package:spotube/hooks/use_force_update.dart';
+import 'package:spotube/hooks/utils/use_force_update.dart';
 import 'package:spotube/pages/lyrics/plain_lyrics.dart';
 import 'package:spotube/pages/lyrics/synced_lyrics.dart';
-import 'package:spotube/provider/authentication_provider.dart';
-import 'package:spotube/provider/proxy_playlist/proxy_playlist_provider.dart';
+import 'package:spotube/provider/audio_player/audio_player.dart';
 import 'package:spotube/utils/platform.dart';
+import 'package:window_manager/window_manager.dart';
 
 class MiniLyricsPage extends HookConsumerWidget {
-  const MiniLyricsPage({Key? key}) : super(key: key);
+  static const name = "mini_lyrics";
+
+  final Size prevSize;
+  const MiniLyricsPage({super.key, required this.prevSize});
 
   @override
   Widget build(BuildContext context, ref) {
     final theme = Theme.of(context);
     final update = useForceUpdate();
-    final prevSize = useRef<Size?>(null);
     final wasMaximized = useRef<bool>(false);
 
-    final playlistQueue = ref.watch(ProxyPlaylistNotifier.provider);
+    final playlistQueue = ref.watch(audioPlayerProvider);
 
     final areaActive = useState(false);
     final hoverMode = useState(true);
+    final showLyrics = useState(true);
 
     useEffect(() {
-      WidgetsBinding.instance.addPostFrameCallback((_) async {
-        prevSize.value = await DesktopTools.window.getSize();
-        wasMaximized.value = await DesktopTools.window.isMaximized();
-      });
+      if (kIsDesktop) {
+        WidgetsBinding.instance.addPostFrameCallback((_) async {
+          wasMaximized.value = await windowManager.isMaximized();
+        });
+      }
       return null;
     }, []);
 
-    final auth = ref.watch(AuthenticationNotifier.provider);
-
-    if (auth == null) {
-      return const Scaffold(
-        appBar: PageWindowTitleBar(),
-        body: AnonymousFallback(),
-      );
-    }
+  
 
     return MouseRegion(
       onEnter: !hoverMode.value
@@ -76,24 +71,50 @@ class MiniLyricsPage extends HookConsumerWidget {
               firstChild: DragToMoveArea(
                 child: Row(
                   children: [
-                    const SizedBox(width: 10),
-                    SizedBox(
-                      height: 30,
-                      width: 30,
-                      child: Sidebar.brandLogo(),
-                    ),
-                    const Spacer(),
-                    SizedBox(
-                      height: 30,
-                      child: TabBar(
-                        tabs: [
-                          Tab(text: context.l10n.synced),
-                          Tab(text: context.l10n.plain),
-                        ],
-                        isScrollable: true,
+                    const Gap(10),
+                    if (!kIsMacOS)
+                      SizedBox(
+                        height: 30,
+                        width: 30,
+                        child: Sidebar.brandLogo(),
                       ),
-                    ),
                     const Spacer(),
+                    if (showLyrics.value)
+                      SizedBox(
+                        height: 30,
+                        child: TabBar(
+                          tabs: [
+                            Tab(text: context.l10n.synced),
+                            Tab(text: context.l10n.plain),
+                          ],
+                          isScrollable: true,
+                        ),
+                      ),
+                    const Spacer(),
+                    IconButton(
+                      tooltip: context.l10n.lyrics,
+                      icon: showLyrics.value
+                          ? const Icon(SpotubeIcons.lyrics)
+                          : const Icon(SpotubeIcons.lyricsOff),
+                      style: ButtonStyle(
+                        foregroundColor: showLyrics.value
+                            ? WidgetStateProperty.all(theme.colorScheme.primary)
+                            : null,
+                      ),
+                      onPressed: () async {
+                        showLyrics.value = !showLyrics.value;
+                        areaActive.value = true;
+                        hoverMode.value = false;
+
+                        if (kIsDesktop) {
+                          await windowManager.setSize(
+                            showLyrics.value
+                                ? const Size(400, 500)
+                                : const Size(400, 150),
+                          );
+                        }
+                      },
+                    ),
                     IconButton(
                       tooltip: context.l10n.show_hide_ui_on_hover,
                       icon: hoverMode.value
@@ -101,44 +122,42 @@ class MiniLyricsPage extends HookConsumerWidget {
                           : const Icon(SpotubeIcons.hoverOff),
                       style: ButtonStyle(
                         foregroundColor: hoverMode.value
-                            ? MaterialStateProperty.all(
-                                theme.colorScheme.primary)
+                            ? WidgetStateProperty.all(theme.colorScheme.primary)
                             : null,
                       ),
                       onPressed: () async {
-                        if (!hoverMode.value == true) {
-                          areaActive.value = true;
-                        }
+                        areaActive.value = true;
                         hoverMode.value = !hoverMode.value;
                       },
                     ),
-                    FutureBuilder(
-                      future: DesktopTools.window.isAlwaysOnTop(),
-                      builder: (context, snapshot) {
-                        return IconButton(
-                          tooltip: context.l10n.always_on_top,
-                          icon: Icon(
-                            snapshot.data == true
-                                ? SpotubeIcons.pinOn
-                                : SpotubeIcons.pinOff,
-                          ),
-                          style: ButtonStyle(
-                            foregroundColor: snapshot.data == true
-                                ? MaterialStateProperty.all(
-                                    theme.colorScheme.primary)
-                                : null,
-                          ),
-                          onPressed: snapshot.data == null
-                              ? null
-                              : () async {
-                                  await DesktopTools.window.setAlwaysOnTop(
-                                    snapshot.data == true ? false : true,
-                                  );
-                                  update();
-                                },
-                        );
-                      },
-                    ),
+                    if (kIsDesktop)
+                      FutureBuilder(
+                        future: windowManager.isAlwaysOnTop(),
+                        builder: (context, snapshot) {
+                          return IconButton(
+                            tooltip: context.l10n.always_on_top,
+                            icon: Icon(
+                              snapshot.data == true
+                                  ? SpotubeIcons.pinOn
+                                  : SpotubeIcons.pinOff,
+                            ),
+                            style: ButtonStyle(
+                              foregroundColor: snapshot.data == true
+                                  ? WidgetStateProperty.all(
+                                      theme.colorScheme.primary)
+                                  : null,
+                            ),
+                            onPressed: snapshot.data == null
+                                ? null
+                                : () async {
+                                    await windowManager.setAlwaysOnTop(
+                                      snapshot.data == true ? false : true,
+                                    );
+                                    update();
+                                  },
+                          );
+                        },
+                      ),
                   ],
                 ),
               ),
@@ -151,22 +170,25 @@ class MiniLyricsPage extends HookConsumerWidget {
                   playlistQueue.activeTrack!.name!,
                   style: theme.textTheme.titleMedium,
                 ),
-              Expanded(
-                child: TabBarView(
-                  children: [
-                    SyncedLyrics(
-                      palette: PaletteColor(theme.colorScheme.background, 0),
-                      isModal: true,
-                      defaultTextZoom: 65,
-                    ),
-                    PlainLyrics(
-                      palette: PaletteColor(theme.colorScheme.background, 0),
-                      isModal: true,
-                      defaultTextZoom: 65,
-                    ),
-                  ],
-                ),
-              ),
+              if (showLyrics.value)
+                Expanded(
+                  child: TabBarView(
+                    children: [
+                      SyncedLyrics(
+                        palette: PaletteColor(theme.colorScheme.surface, 0),
+                        isModal: true,
+                        defaultTextZoom: 65,
+                      ),
+                      PlainLyrics(
+                        palette: PaletteColor(theme.colorScheme.surface, 0),
+                        isModal: true,
+                        defaultTextZoom: 65,
+                      ),
+                    ],
+                  ),
+                )
+              else
+                const Gap(20),
               AnimatedCrossFade(
                 crossFadeState: areaActive.value
                     ? CrossFadeState.showFirst
@@ -195,30 +217,41 @@ class MiniLyricsPage extends HookConsumerWidget {
                                       MediaQuery.of(context).size.height * .7,
                                 ),
                                 builder: (context) {
-                                  return const PlayerQueue(floating: true);
+                                  return Consumer(builder: (context, ref, _) {
+                                    final playlist =
+                                        ref.watch(audioPlayerProvider);
+
+                                    return PlayerQueue.fromAudioPlayerNotifier(
+                                      floating: true,
+                                      playlist: playlist,
+                                      notifier: ref
+                                          .read(audioPlayerProvider.notifier),
+                                    );
+                                  });
                                 },
                               );
                             }
                           : null,
                     ),
-                    Flexible(child: PlayerControls(compact: true)),
+                    const Flexible(child: PlayerControls(compact: true)),
                     IconButton(
                       tooltip: context.l10n.exit_mini_player,
                       icon: const Icon(SpotubeIcons.maximize),
                       onPressed: () async {
+                        if (!kIsDesktop) return;
+
                         try {
-                          await DesktopTools.window
+                          await windowManager
                               .setMinimumSize(const Size(300, 700));
-                          await DesktopTools.window.setAlwaysOnTop(false);
+                          await windowManager.setAlwaysOnTop(false);
                           if (wasMaximized.value) {
-                            await DesktopTools.window.maximize();
+                            await windowManager.maximize();
                           } else {
-                            await DesktopTools.window.setSize(prevSize.value!);
+                            await windowManager.setSize(prevSize);
                           }
-                          await DesktopTools.window
-                              .setAlignment(Alignment.center);
+                          await windowManager.setAlignment(Alignment.center);
                           if (!kIsLinux) {
-                            await DesktopTools.window.setHasShadow(true);
+                            await windowManager.setHasShadow(true);
                           }
                           await Future.delayed(
                               const Duration(milliseconds: 200));
